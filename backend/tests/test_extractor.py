@@ -1,6 +1,6 @@
 from datetime import date
 
-from app.extractor import parse_text_locally
+from app.extractor import parse_text_locally, parse_text_locally_multi
 
 TODAY = date(2026, 10, 19)
 
@@ -24,3 +24,8 @@ def test_rubles_sign_and_decimal():
 def test_no_amount():
     d = parse_text_locally("просто сообщение", TODAY)
     assert d.amount is None and not d.is_payment
+
+
+def test_multiline_splits_only_when_each_line_has_amount():
+    assert len(parse_text_locally_multi("Сидоров 5000\nКузнецова 4000", TODAY)) == 2
+    assert len(parse_text_locally_multi("Сидоров Саша\n5000 за октябрь", TODAY)) == 1

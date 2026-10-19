@@ -1,11 +1,23 @@
-import { useEffect, useState } from "react";
-import { api, currentMonth, money, MonthReport } from "../api";
+import { Fragment, useEffect, useState } from "react";
+import { api, currentMonth, fmtDate, money, MonthReport, Payment } from "../api";
 
 export function Report() {
   const [month, setMonth] = useState(currentMonth());
   const [report, setReport] = useState<MonthReport | null>(null);
   const [onlyDebtors, setOnlyDebtors] = useState(false);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState<number | null>(null);
+  const [history, setHistory] = useState<Payment[] | null>(null);
+
+  function toggle(studentId: number) {
+    if (open === studentId) {
+      setOpen(null);
+      return;
+    }
+    setOpen(studentId);
+    setHistory(null);
+    api.payments({ student_id: String(studentId) }).then(setHistory).catch((e) => setError(e.message));
+  }
 
   useEffect(() => {
     setError("");
@@ -55,14 +67,36 @@ export function Report() {
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={r.student.id}>
-                  <td>
-                    {r.student.full_name}
-                    {r.student.group_name && <div className="muted small">{r.student.group_name}</div>}
-                  </td>
-                  <td className="num">{money(r.paid)}</td>
-                  <td className={`num ${r.debt > 0 ? "debt" : "paid"}`}>{r.debt > 0 ? money(r.debt) : "✓"}</td>
-                </tr>
+                <Fragment key={r.student.id}>
+                  <tr className="clickable" onClick={() => toggle(r.student.id)}>
+                    <td>
+                      {r.student.full_name}
+                      {r.student.group_name && <div className="muted small">{r.student.group_name}</div>}
+                    </td>
+                    <td className="num">{money(r.paid)}</td>
+                    <td className={`num ${r.debt > 0 ? "debt" : "paid"}`}>{r.debt > 0 ? money(r.debt) : "✓"}</td>
+                  </tr>
+                  {open === r.student.id && (
+                    <tr className="history">
+                      <td colSpan={3}>
+                        {history === null ? (
+                          <span className="muted small">Загрузка…</span>
+                        ) : history.length === 0 ? (
+                          <span className="muted small">Оплат ещё не было</span>
+                        ) : (
+                          <ul className="plain small">
+                            {history.map((p) => (
+                              <li key={p.id}>
+                                {fmtDate(p.paid_at)} — <b>{money(p.amount)}</b>
+                                {p.status === "needs_review" && <span className="muted"> (на проверке)</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

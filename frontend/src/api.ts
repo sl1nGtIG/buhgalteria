@@ -31,8 +31,8 @@ export interface Payment {
   bank: string | null;
   operation_id: string | null;
   raw_text: string | null;
-  source: "photo" | "text" | "manual";
-  has_image: boolean;
+  source: "photo" | "text" | "manual" | "telegram";
+  attachment: "image" | "pdf" | null;
   status: "confirmed" | "needs_review";
   confidence: number;
   created_at: string;
@@ -45,11 +45,15 @@ export interface Candidate {
   score: number;
   reasons: string[];
 }
-export interface RecognizeResult {
+export interface RecognizeItem {
   payment: Payment;
   candidates: Candidate[];
   auto_confirmed: boolean;
   duplicate_of: number | null;
+  message: string;
+}
+export interface RecognizeResult {
+  items: RecognizeItem[];
   message: string;
 }
 export interface MonthReport {
@@ -94,6 +98,7 @@ export function getSettings() {
 }
 
 export function saveSettings(next: { serverUrl: string; token: string }) {
+  peopleCache = null;
   serverUrl = next.serverUrl.trim().replace(/\/+$/, "");
   token = next.token.trim();
   write(SERVER_KEY, serverUrl);
@@ -133,28 +138,43 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const json = (body: unknown) => JSON.stringify(body);
 
+/** Ученики и родители нужны в каждой карточке «на проверке» — грузим один раз. */
+let peopleCache: Promise<{ students: Student[]; parents: Parent[] }> | null = null;
+
+export function people() {
+  if (!peopleCache) {
+    peopleCache = Promise.all([api.students(), api.parents()]).then(([students, parents]) => ({ students, parents }));
+    peopleCache.catch(() => (peopleCache = null));
+  }
+  return peopleCache;
+}
+
+function changed<T>(p: Promise<T>): Promise<T> {
+  return p.finally(() => (peopleCache = null));
+}
+
 export const api = {
   health: () => request<Health>("/health"),
 
   students: () => request<Student[]>("/students"),
-  createStudent: (body: unknown) => request<Student>("/students", { method: "POST", body: json(body) }),
+  createStudent: (body: unknown) => changed(request<Student>("/students", { method: "POST", body: json(body) })),
   updateStudent: (id: number, body: unknown) =>
-    request<Student>(`/students/${id}`, { method: "PUT", body: json(body) }),
-  deleteStudent: (id: number) => request<void>(`/students/${id}`, { method: "DELETE" }),
+    changed(request<Student>(`/students/${id}`, { method: "PUT", body: json(body) })),
+  deleteStudent: (id: number) => changed(request<void>(`/students/${id}`, { method: "DELETE" })),
 
   parents: () => request<Parent[]>("/parents"),
-  createParent: (body: unknown) => request<Parent>("/parents", { method: "POST", body: json(body) }),
+  createParent: (body: unknown) => changed(request<Parent>("/parents", { method: "POST", body: json(body) })),
   updateParent: (id: number, body: unknown) =>
-    request<Parent>(`/parents/${id}`, { method: "PUT", body: json(body) }),
-  deleteParent: (id: number) => request<void>(`/parents/${id}`, { method: "DELETE" }),
+    changed(request<Parent>(`/parents/${id}`, { method: "PUT", body: json(body) })),
+  deleteParent: (id: number) => changed(request<void>(`/parents/${id}`, { method: "DELETE" })),
 
   recognize: (file: Blob | null, text: string) => {
     const form = new FormData();
-    if (file) form.append("file", file, "receipt.jpg");
+    if (file) form.append("file", file, file instanceof File ? file.name : "receipt.jpg");
     if (text.trim()) form.append("text", text.trim());
     return request<RecognizeResult>("/payments/recognize", { method: "POST", body: form });
   },
-  payments: (params: { status?: string; month?: string }) => {
+  payments: (params: { status?: string; month?: string; student_id?: string; parent_id?: string }) => {
     const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
     return request<Payment[]>(`/payments?${q}`);
   },
@@ -171,8 +191,9 @@ export const api = {
     `${serverUrl}/api/payments/export.csv?month=${month}${token ? `&token=${encodeURIComponent(token)}` : ""}`,
 };
 
-/** Уменьшает фото перед отправкой: меньше трафика и быстрее распознавание. */
+/** Уменьшает фото перед отправкой: меньше трафика и быстрее распознавание. PDF отправляется как есть. */
 export async function shrinkImage(file: File, maxSide = 2000): Promise<Blob> {
+  if (!file.type.startsWith("image/") || file.type === "image/gif") return file;
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));

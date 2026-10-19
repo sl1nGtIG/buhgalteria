@@ -1,104 +1,156 @@
 import { useRef, useState } from "react";
-import { api, Payment, RecognizeResult, shrinkImage } from "../api";
+import { api, Payment, RecognizeItem, shrinkImage } from "../api";
 import { Assign } from "../components/Assign";
 import { PaymentCard } from "../components/PaymentCard";
 
+interface Picked {
+  file: File;
+  preview: string;
+}
+
+interface Outcome {
+  title: string;
+  message: string;
+  items: RecognizeItem[];
+  error?: string;
+}
+
 export function AddPayment({ onChanged }: { onChanged: () => void }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState("");
+  const [picked, setPicked] = useState<Picked[]>([]);
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
-  const [result, setResult] = useState<RecognizeResult | null>(null);
+  const [outcomes, setOutcomes] = useState<Outcome[]>([]);
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
-  function pick(f: File | undefined) {
-    if (!f) return;
-    setFile(f);
-    setPreview(URL.createObjectURL(f));
-    setResult(null);
+  function pick(files: FileList | null) {
+    if (!files?.length) return;
+    const next = Array.from(files).map((file) => ({
+      file,
+      preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+    }));
+    setPicked((p) => [...p, ...next]);
     setError("");
-  }
-
-  function reset() {
-    setFile(null);
-    setPreview("");
-    setText("");
     if (cameraRef.current) cameraRef.current.value = "";
     if (galleryRef.current) galleryRef.current.value = "";
   }
 
+  function unpick(i: number) {
+    setPicked((p) => p.filter((_, j) => j !== i));
+  }
+
   async function submit() {
-    setBusy(true);
     setError("");
-    setResult(null);
+    setOutcomes([]);
+    const results: Outcome[] = [];
     try {
-      const blob = file ? await shrinkImage(file) : null;
-      const r = await api.recognize(blob, text);
-      setResult(r);
-      reset();
+      if (picked.length === 0) {
+        setProgress("Распознаю…");
+        const r = await api.recognize(null, text);
+        results.push({ title: "Текст", message: r.message, items: r.items });
+      }
+      for (const [i, p] of picked.entries()) {
+        setProgress(picked.length > 1 ? `Распознаю ${i + 1} из ${picked.length}…` : "Распознаю…");
+        try {
+          const r = await api.recognize(await shrinkImage(p.file), text);
+          results.push({ title: p.file.name, message: r.message, items: r.items });
+        } catch (e) {
+          results.push({ title: p.file.name, message: "", items: [], error: (e as Error).message });
+        }
+        setOutcomes([...results]);
+      }
+      setOutcomes(results);
+      setPicked([]);
+      setText("");
       onChanged();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setProgress("");
     }
   }
 
-  function assigned(p: Payment) {
-    setResult((r) => r && { ...r, payment: p, auto_confirmed: true, message: "Оплата зафиксирована" });
+  function replace(p: Payment) {
+    setOutcomes((list) =>
+      list.map((o) => ({
+        ...o,
+        items: o.items.map((it) => (it.payment.id === p.id ? { ...it, payment: p, auto_confirmed: p.status === "confirmed" } : it)),
+      })),
+    );
     onChanged();
   }
+
+  const busy = progress !== "";
+  const many = picked.length > 1;
 
   return (
     <div className="page">
       <div className="card">
         <h2>Новая оплата</h2>
         <p className="muted small">
-          Сфотографируйте чек или загрузите скриншот перевода — система сама найдёт сумму, дату и
-          плательщика и привяжет оплату к ученику или родителю. Можно просто написать текстом:
-          «Сидоров Саша 5000 за октябрь».
+          Сфотографируйте чек, загрузите скриншот перевода, PDF-квитанцию или выписку с несколькими
+          переводами. Система сама найдёт сумму, дату и плательщика и привяжет оплату к ученику или
+          родителю. Можно просто написать текстом, по одной оплате в строке: «Сидоров Саша 5000».
         </p>
 
         <div className="row">
-          <button onClick={() => cameraRef.current?.click()}>📷 Сфотографировать</button>
-          <button onClick={() => galleryRef.current?.click()}>🖼 Выбрать фото</button>
+          <button onClick={() => cameraRef.current?.click()} disabled={busy}>📷 Сфотографировать</button>
+          <button onClick={() => galleryRef.current?.click()} disabled={busy}>🖼 Фото или PDF</button>
         </div>
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => pick(e.target.files?.[0])} />
-        <input ref={galleryRef} type="file" accept="image/*" hidden onChange={(e) => pick(e.target.files?.[0])} />
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => pick(e.target.files)} />
+        <input ref={galleryRef} type="file" accept="image/*,application/pdf" multiple hidden onChange={(e) => pick(e.target.files)} />
 
-        {preview && (
-          <div className="preview">
-            <img src={preview} alt="Чек" />
-            <button className="link" onClick={() => { setFile(null); setPreview(""); }}>убрать фото</button>
+        {picked.length > 0 && (
+          <div className="thumbs">
+            {picked.map((p, i) => (
+              <div key={i} className="thumb">
+                {p.preview ? <img src={p.preview} alt="" /> : <div className="pdf">PDF</div>}
+                <button className="remove" aria-label="Убрать" onClick={() => unpick(i)} disabled={busy}>×</button>
+              </div>
+            ))}
           </div>
         )}
 
         <textarea
           rows={3}
-          placeholder={file ? "Комментарий к фото (необязательно), например «за Машу»" : "Например: Иванова Маша 4500 15.10"}
+          placeholder={
+            picked.length
+              ? `Комментарий к ${many ? "файлам" : "фото"} (необязательно), например «за Машу»`
+              : "Например: Иванова Маша 4500 15.10"
+          }
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
-        <button className="primary wide" disabled={busy || (!file && !text.trim())} onClick={submit}>
-          {busy ? "Распознаю…" : "Зафиксировать оплату"}
+        <button className="primary wide" disabled={busy || (!picked.length && !text.trim())} onClick={submit}>
+          {progress || (many ? `Распознать ${picked.length} файла(ов)` : "Зафиксировать оплату")}
         </button>
         {error && <div className="error">{error}</div>}
       </div>
 
-      {result && (
-        <>
-          <div className={`notice ${result.auto_confirmed ? "ok" : result.duplicate_of ? "warn" : "info"}`}>
-            {result.message}
-          </div>
-          <PaymentCard payment={result.payment}>
-            {result.payment.status === "needs_review" && !result.duplicate_of && (
-              <Assign payment={result.payment} candidates={result.candidates} onDone={assigned} />
-            )}
-          </PaymentCard>
-        </>
-      )}
+      {outcomes.map((o, i) => (
+        <div key={i} className="page">
+          {outcomes.length > 1 && <div className="muted small">{o.title}</div>}
+          {o.error ? (
+            <div className="error">{o.error}</div>
+          ) : (
+            <div className={`notice ${noticeKind(o.items)}`}>{o.message}</div>
+          )}
+          {o.items.map((it) => (
+            <PaymentCard key={it.payment.id} payment={it.payment} onChange={replace}>
+              {it.payment.status === "needs_review" && !it.duplicate_of && (
+                <Assign payment={it.payment} candidates={it.candidates} onDone={replace} />
+              )}
+            </PaymentCard>
+          ))}
+        </div>
+      ))}
     </div>
   );
+}
+
+function noticeKind(items: RecognizeItem[]) {
+  if (items.every((i) => i.duplicate_of)) return "warn";
+  if (items.every((i) => i.auto_confirmed || i.duplicate_of)) return "ok";
+  return "info";
 }

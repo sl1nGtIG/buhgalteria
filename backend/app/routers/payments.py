@@ -1,26 +1,18 @@
 import csv
 import io
-import uuid
-from datetime import date
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import extract, select
 from sqlalchemy.orm import Session
 
-from .. import service
+from .. import intake, service
 from ..config import settings
 from ..db import get_db
-from ..extractor import ExtractionError, extract_from_image, extract_from_text
 from ..models import Parent, Payment, Student
 from ..schemas import CandidateOut, ManualPaymentIn, PaymentOut, PaymentUpdate, RecognizeResult
 
 router = APIRouter(prefix="/payments", tags=["payments"])
-
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
-EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
-
 
 def _get(db: Session, payment_id: int) -> Payment:
     payment = db.get(Payment, payment_id)
@@ -35,64 +27,14 @@ async def recognize(
     text: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
-    """Главный сценарий: прислали фото чека и/или текст — система сама фиксирует оплату."""
-    text = (text or "").strip()
-    if file is None and not text:
-        raise HTTPException(status_code=400, detail="Пришлите фото чека или текст оплаты")
-
-    image_path = None
+    """Главный сценарий: прислали фото/PDF чека и/или текст — система сама фиксирует оплату."""
+    content = await file.read() if file is not None else None
     try:
-        if file is not None:
-            content = await file.read()
-            if len(content) > MAX_IMAGE_BYTES:
-                raise HTTPException(status_code=413, detail="Фото больше 10 МБ")
-            media_type = file.content_type or "image/jpeg"
-            data = extract_from_image(content, media_type)
-            if text:
-                # Подпись к фото (например, «за Машу») помогает найти ученика.
-                data.purpose = " ".join(filter(None, [data.purpose, text]))
-            image_path = _save_image(content, media_type)
-            source = "photo"
-        else:
-            data = extract_from_text(text)
-            source = "text"
-    except ExtractionError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    if not data.is_payment and data.amount is None:
-        raise HTTPException(status_code=422, detail="Не удалось найти оплату: нет суммы")
-
-    payment, cands, auto, duplicate = service.record_payment(
-        db, data, source=source, raw_text=text or None, image_path=image_path
-    )
-    if duplicate is not None:
-        if image_path:
-            (settings.upload_dir / image_path).unlink(missing_ok=True)
-        message = "Эта оплата уже была загружена ранее"
-    elif auto:
-        who = payment.student.full_name if payment.student else payment.parent.full_name
-        message = f"Оплата зафиксирована: {who}"
-    elif cands:
-        message = "Нужно подтвердить, кому относится оплата"
-    else:
-        message = "Плательщик не найден — выберите ученика или родителя вручную"
-
-    return RecognizeResult(
-        payment=service.payment_out(payment),
-        candidates=service.candidates_out(db, cands),
-        auto_confirmed=auto,
-        duplicate_of=duplicate.id if duplicate else None,
-        message=message,
-    )
-
-
-def _save_image(content: bytes, media_type: str) -> str:
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{date.today():%Y-%m}/{uuid.uuid4().hex}{EXTENSIONS.get(media_type, '.jpg')}"
-    path = settings.upload_dir / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    return name
+        return intake.process(
+            db, content=content, media_type=file.content_type if file else None, text=text
+        )
+    except intake.IntakeError as e:
+        raise HTTPException(status_code=e.status, detail=str(e)) from e
 
 
 @router.post("/manual", response_model=PaymentOut, status_code=201)
@@ -192,7 +134,7 @@ def get_candidates(payment_id: int, db: Session = Depends(get_db)):
 def get_image(payment_id: int, db: Session = Depends(get_db)):
     payment = _get(db, payment_id)
     if not payment.image_path:
-        raise HTTPException(status_code=404, detail="У оплаты нет фото")
+        raise HTTPException(status_code=404, detail="У оплаты нет чека")
     path = (settings.upload_dir / payment.image_path).resolve()
     if not path.is_relative_to(settings.upload_dir.resolve()) or not path.exists():
         raise HTTPException(status_code=404, detail="Фото не найдено")
@@ -204,19 +146,18 @@ def update_payment(payment_id: int, body: PaymentUpdate, db: Session = Depends(g
     payment = _get(db, payment_id)
     fields = body.model_dump(exclude_unset=True)
     remember = fields.pop("remember_payer", True)
+    student_id = fields.pop("student_id", payment.student_id)
+    parent_id = fields.pop("parent_id", payment.parent_id)
+    reassigned = "student_id" in body.model_fields_set or "parent_id" in body.model_fields_set
     for key, value in fields.items():
         setattr(payment, key, value)
+    payment.student_id, payment.parent_id = student_id, parent_id
     _check_refs(db, payment)
-    # Если назначили ученика/родителя и статус явно не задан — считаем оплату подтверждённой.
-    if ("student_id" in fields or "parent_id" in fields) and "status" not in fields:
-        if payment.student_id or payment.parent_id:
-            payment.status = "confirmed"
-            payment.confidence = 1.0
-    if payment.status == "confirmed" and not (payment.student_id or payment.parent_id):
+    if payment.status == "confirmed" and not (student_id or parent_id):
         raise HTTPException(status_code=400, detail="Нельзя подтвердить оплату без ученика или родителя")
-    if remember and payment.status == "confirmed":
-        db.flush()
-        service.remember_payer(db, payment)
+    if reassigned and "status" not in fields:
+        # Назначили ученика/родителя — оплата подтверждена, плательщик запомнен.
+        return service.payment_out(service.assign_payment(db, payment, student_id, parent_id, remember))
     db.commit()
     db.refresh(payment)
     return service.payment_out(payment)
@@ -225,8 +166,7 @@ def update_payment(payment_id: int, body: PaymentUpdate, db: Session = Depends(g
 @router.delete("/{payment_id}", status_code=204)
 def delete_payment(payment_id: int, db: Session = Depends(get_db)):
     payment = _get(db, payment_id)
-    if payment.image_path:
-        (settings.upload_dir / payment.image_path).unlink(missing_ok=True)
+    service.delete_attachment_if_unused(db, payment.image_path, except_id=payment.id)
     db.delete(payment)
     db.commit()
 

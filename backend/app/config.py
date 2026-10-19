@@ -18,6 +18,11 @@ class Settings:
         )
         # Порог уверенности, выше которого оплата фиксируется автоматически.
         self.auto_confirm_score = float(os.getenv("AUTO_CONFIRM_SCORE", "0.85"))
+        # Telegram-бот (необязательно): токен от @BotFather и ID чатов, которым разрешено присылать чеки.
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.telegram_allowed_chats = {
+            int(x) for x in os.getenv("TELEGRAM_ALLOWED_CHATS", "").replace(";", ",").split(",") if x.strip()
+        }
         self.frontend_dist = Path(
             os.getenv("FRONTEND_DIST", Path(__file__).resolve().parents[2] / "frontend" / "dist")
         )

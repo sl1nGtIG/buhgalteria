@@ -60,7 +60,8 @@ class PaymentOut(BaseModel):
     operation_id: str | None
     raw_text: str | None
     source: str
-    has_image: bool = False
+    # Вложение чека: "image", "pdf" или None
+    attachment: str | None = None
     status: str
     confidence: float
     created_at: datetime
@@ -75,11 +76,16 @@ class CandidateOut(BaseModel):
     reasons: list[str]
 
 
-class RecognizeResult(BaseModel):
+class RecognizeItem(BaseModel):
     payment: PaymentOut
     candidates: list[CandidateOut]
     auto_confirmed: bool
     duplicate_of: int | None = None
+    message: str
+
+
+class RecognizeResult(BaseModel):
+    items: list[RecognizeItem]
     message: str
 
 

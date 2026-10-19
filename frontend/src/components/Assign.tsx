@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Candidate, Parent, Payment, Student } from "../api";
+import { api, Candidate, Parent, Payment, people, Student } from "../api";
 
 interface Props {
   payment: Payment;
@@ -18,8 +18,12 @@ export function Assign({ payment, candidates: initial, onDone }: Props) {
 
   useEffect(() => {
     if (!initial) api.candidates(payment.id).then(setCandidates).catch(() => {});
-    api.students().then(setStudents).catch(() => {});
-    api.parents().then(setParents).catch(() => {});
+    people()
+      .then((p) => {
+        setStudents(p.students);
+        setParents(p.parents);
+      })
+      .catch(() => {});
   }, [payment.id, initial]);
 
   async function assign(student_id: number | null, parent_id: number | null) {

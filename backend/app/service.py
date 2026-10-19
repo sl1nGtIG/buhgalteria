@@ -14,7 +14,8 @@ from .schemas import CandidateOut, ParentBrief, PaymentOut, StudentBrief
 
 def payment_out(p: Payment) -> PaymentOut:
     out = PaymentOut.model_validate(p)
-    out.has_image = bool(p.image_path)
+    if p.image_path:
+        out.attachment = "pdf" if p.image_path.endswith(".pdf") else "image"
     return out
 
 
@@ -143,3 +144,33 @@ def remember_payer(db: Session, payment: Payment) -> None:
     parent = db.get(Parent, payment.parent_id) if payment.parent_id else None
     if parent and len(parent.students) > 1:
         row.student_id = None
+
+
+def assign_payment(
+    db: Session, payment: Payment, student_id: int | None, parent_id: int | None, remember: bool = True
+) -> Payment:
+    """Ручная привязка оплаты: подтверждает её и запоминает плательщика."""
+    payment.student_id = student_id
+    payment.parent_id = parent_id
+    if student_id or parent_id:
+        payment.status = "confirmed"
+        payment.confidence = 1.0
+        if remember:
+            db.flush()
+            remember_payer(db, payment)
+    else:
+        payment.status = "needs_review"
+    db.commit()
+    db.refresh(payment)
+    return payment
+
+
+def delete_attachment_if_unused(db: Session, image_path: str | None, except_id: int | None = None) -> None:
+    """Один файл может принадлежать нескольким оплатам (выписка) — удаляем, когда он больше не нужен."""
+    if not image_path:
+        return
+    q = select(Payment.id).where(Payment.image_path == image_path)
+    if except_id is not None:
+        q = q.where(Payment.id != except_id)
+    if db.scalar(q.limit(1)) is None:
+        (settings.upload_dir / image_path).unlink(missing_ok=True)
