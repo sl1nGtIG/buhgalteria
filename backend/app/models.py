@@ -1,0 +1,83 @@
+from datetime import date, datetime
+
+from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, String, Table, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+parent_student = Table(
+    "parent_student",
+    Base.metadata,
+    Column("parent_id", ForeignKey("parents.id", ondelete="CASCADE"), primary_key=True),
+    Column("student_id", ForeignKey("students.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Student(Base):
+    __tablename__ = "students"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(200))
+    group_name: Mapped[str | None] = mapped_column(String(100))
+    monthly_fee: Mapped[float] = mapped_column(Float, default=0)
+    notes: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(default=True)
+
+    parents: Mapped[list["Parent"]] = relationship(
+        secondary=parent_student, back_populates="students"
+    )
+
+
+class Parent(Base):
+    __tablename__ = "parents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    full_name: Mapped[str] = mapped_column(String(200))
+    phone: Mapped[str | None] = mapped_column(String(50))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    students: Mapped[list[Student]] = relationship(
+        secondary=parent_student, back_populates="parents"
+    )
+
+
+class PayerAlias(Base):
+    """Запомненное написание плательщика из чеков → кому относится оплата.
+
+    Создаётся, когда человек вручную подтверждает оплату, чтобы в следующий раз
+    такой же чек распознавался автоматически.
+    """
+
+    __tablename__ = "payer_aliases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    alias: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("parents.id", ondelete="CASCADE"))
+    student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    amount: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str] = mapped_column(String(10), default="RUB")
+    paid_at: Mapped[date | None] = mapped_column(Date, index=True)
+    payer_name: Mapped[str | None] = mapped_column(String(200))
+    payer_phone: Mapped[str | None] = mapped_column(String(50))
+    purpose: Mapped[str | None] = mapped_column(Text)
+    bank: Mapped[str | None] = mapped_column(String(100))
+    operation_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    raw_text: Mapped[str | None] = mapped_column(Text)
+    # photo | text | manual
+    source: Mapped[str] = mapped_column(String(20))
+    image_path: Mapped[str | None] = mapped_column(String(300))
+    student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id", ondelete="SET NULL"))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("parents.id", ondelete="SET NULL"))
+    # confirmed | needs_review
+    status: Mapped[str] = mapped_column(String(20), default="needs_review", index=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+    student: Mapped[Student | None] = relationship()
+    parent: Mapped[Parent | None] = relationship()

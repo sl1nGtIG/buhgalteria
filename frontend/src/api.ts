@@ -1,0 +1,196 @@
+import { Capacitor } from "@capacitor/core";
+
+export interface PersonBrief {
+  id: number;
+  full_name: string;
+}
+export interface StudentBrief extends PersonBrief {
+  group_name: string | null;
+}
+export interface ParentBrief extends PersonBrief {
+  phone: string | null;
+}
+export interface Student extends StudentBrief {
+  monthly_fee: number;
+  notes: string | null;
+  active: boolean;
+  parents: ParentBrief[];
+}
+export interface Parent extends ParentBrief {
+  notes: string | null;
+  students: StudentBrief[];
+}
+export interface Payment {
+  id: number;
+  amount: number | null;
+  currency: string;
+  paid_at: string | null;
+  payer_name: string | null;
+  payer_phone: string | null;
+  purpose: string | null;
+  bank: string | null;
+  operation_id: string | null;
+  raw_text: string | null;
+  source: "photo" | "text" | "manual";
+  has_image: boolean;
+  status: "confirmed" | "needs_review";
+  confidence: number;
+  created_at: string;
+  student: StudentBrief | null;
+  parent: ParentBrief | null;
+}
+export interface Candidate {
+  student: StudentBrief | null;
+  parent: ParentBrief | null;
+  score: number;
+  reasons: string[];
+}
+export interface RecognizeResult {
+  payment: Payment;
+  candidates: Candidate[];
+  auto_confirmed: boolean;
+  duplicate_of: number | null;
+  message: string;
+}
+export interface MonthReport {
+  month: string;
+  total: number;
+  rows: { student: StudentBrief; monthly_fee: number; paid: number; debt: number; payments: number }[];
+  parent_only: { parent: ParentBrief; paid: number }[];
+  needs_review: number;
+}
+export interface Health {
+  status: string;
+  auth_required: boolean;
+  photo_recognition: boolean;
+}
+
+const SERVER_KEY = "buh.server";
+const TOKEN_KEY = "buh.token";
+
+function read(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function write(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* хранилище недоступно — настройки будут действовать до перезапуска */
+  }
+}
+
+let serverUrl = read(SERVER_KEY) || import.meta.env.VITE_API_URL || "";
+let token = read(TOKEN_KEY);
+
+export const isNative = Capacitor.isNativePlatform();
+
+export function getSettings() {
+  return { serverUrl, token };
+}
+
+export function saveSettings(next: { serverUrl: string; token: string }) {
+  serverUrl = next.serverUrl.trim().replace(/\/+$/, "");
+  token = next.token.trim();
+  write(SERVER_KEY, serverUrl);
+  write(TOKEN_KEY, token);
+}
+
+/** В приложении без адреса сервера работать нельзя — сайт же обслуживается самим сервером. */
+export function needsSetup() {
+  return isNative && !serverUrl;
+}
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
+  let res: Response;
+  try {
+    res = await fetch(`${serverUrl}/api${path}`, { ...init, headers });
+  } catch {
+    throw new ApiError(0, "Нет связи с сервером. Проверьте адрес сервера и интернет.");
+  }
+  if (res.status === 204) return undefined as T;
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = data?.detail;
+    const msg = typeof detail === "string" ? detail : `Ошибка сервера (${res.status})`;
+    throw new ApiError(res.status, msg);
+  }
+  return data as T;
+}
+
+const json = (body: unknown) => JSON.stringify(body);
+
+export const api = {
+  health: () => request<Health>("/health"),
+
+  students: () => request<Student[]>("/students"),
+  createStudent: (body: unknown) => request<Student>("/students", { method: "POST", body: json(body) }),
+  updateStudent: (id: number, body: unknown) =>
+    request<Student>(`/students/${id}`, { method: "PUT", body: json(body) }),
+  deleteStudent: (id: number) => request<void>(`/students/${id}`, { method: "DELETE" }),
+
+  parents: () => request<Parent[]>("/parents"),
+  createParent: (body: unknown) => request<Parent>("/parents", { method: "POST", body: json(body) }),
+  updateParent: (id: number, body: unknown) =>
+    request<Parent>(`/parents/${id}`, { method: "PUT", body: json(body) }),
+  deleteParent: (id: number) => request<void>(`/parents/${id}`, { method: "DELETE" }),
+
+  recognize: (file: Blob | null, text: string) => {
+    const form = new FormData();
+    if (file) form.append("file", file, "receipt.jpg");
+    if (text.trim()) form.append("text", text.trim());
+    return request<RecognizeResult>("/payments/recognize", { method: "POST", body: form });
+  },
+  payments: (params: { status?: string; month?: string }) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]);
+    return request<Payment[]>(`/payments?${q}`);
+  },
+  candidates: (id: number) => request<Candidate[]>(`/payments/${id}/candidates`),
+  updatePayment: (id: number, body: unknown) =>
+    request<Payment>(`/payments/${id}`, { method: "PATCH", body: json(body) }),
+  deletePayment: (id: number) => request<void>(`/payments/${id}`, { method: "DELETE" }),
+  manualPayment: (body: unknown) => request<Payment>("/payments/manual", { method: "POST", body: json(body) }),
+  report: (month: string) => request<MonthReport>(`/reports/month?month=${month}`),
+
+  imageUrl: (id: number) =>
+    `${serverUrl}/api/payments/${id}/image${token ? `?token=${encodeURIComponent(token)}` : ""}`,
+  exportUrl: (month: string) =>
+    `${serverUrl}/api/payments/export.csv?month=${month}${token ? `&token=${encodeURIComponent(token)}` : ""}`,
+};
+
+/** Уменьшает фото перед отправкой: меньше трафика и быстрее распознавание. */
+export async function shrinkImage(file: File, maxSide = 2000): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/jpeg", 0.85));
+    return blob ?? file;
+  } catch {
+    return file;
+  }
+}
+
+export const money = (v: number | null | undefined) =>
+  v == null ? "—" : `${v.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} ₽`;
+
+export const fmtDate = (v: string | null) =>
+  v ? new Date(v + "T00:00:00").toLocaleDateString("ru-RU") : "—";
+
+export const currentMonth = () => new Date().toISOString().slice(0, 7);
