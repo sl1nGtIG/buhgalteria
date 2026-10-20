@@ -91,18 +91,43 @@ def _ask_claude(content: list[dict]) -> list[ReceiptData]:
     return [p for p in response.parsed_output.payments if p.is_payment or p.amount is not None]
 
 
-def extract_from_file(content: bytes, media_type: str) -> list[ReceiptData]:
-    """Фото, скриншот или PDF-квитанция → список оплат."""
-    if not settings.anthropic_enabled:
-        raise ExtractionError(
-            "Распознавание фото не настроено: задайте ANTHROPIC_API_KEY на сервере"
-        )
+def extract_from_file(content: bytes, media_type: str, ocr_text: str | None = None) -> list[ReceiptData]:
+    """Фото, скриншот или PDF-квитанция → список оплат.
+
+    По умолчанию работает без внешних API: текст чека читается на устройстве (ocr_text) или на
+    сервере (текстовый слой PDF, Tesseract) и разбирается парсером чеков. Если задан ключ
+    Claude API, распознавание выполняет модель — так точнее на плохих фото.
+    """
     if media_type not in SUPPORTED_TYPES:
         raise ExtractionError(f"Неподдерживаемый формат файла: {media_type}")
-    data = base64.standard_b64encode(content).decode("utf-8")
-    source = {"type": "base64", "media_type": media_type, "data": data}
-    block = {"type": "document" if media_type == "application/pdf" else "image", "source": source}
-    return _ask_claude([block, {"type": "text", "text": "Извлеки данные оплаты из этого чека."}])
+    if settings.anthropic_enabled:
+        data = base64.standard_b64encode(content).decode("utf-8")
+        source = {"type": "base64", "media_type": media_type, "data": data}
+        kind = "document" if media_type == "application/pdf" else "image"
+        try:
+            return _ask_claude([{"type": kind, "source": source},
+                                {"type": "text", "text": "Извлеки данные оплаты из этого чека."}])
+        except ExtractionError:
+            if not ocr_text:
+                raise
+
+    from . import ocr
+    from .receipt_parser import parse_receipt
+
+    text = (ocr_text or "").strip() or ocr.file_text(content, media_type)
+    if not text:
+        raise ExtractionError(
+            "Не удалось прочитать чек на сервере. Загрузите его через сайт или приложение "
+            "(там чек читается прямо на устройстве) или напишите оплату текстом."
+        )
+    return parse_receipt(text)
+
+
+def extract_from_ocr_text(ocr_text: str) -> list[ReceiptData]:
+    """Чек уже прочитан на устройстве, а сам файл не прислан (например, слишком большой PDF)."""
+    from .receipt_parser import parse_receipt
+
+    return parse_receipt(ocr_text)
 
 
 def extract_from_text(text: str) -> list[ReceiptData]:

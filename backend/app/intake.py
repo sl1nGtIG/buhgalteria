@@ -1,38 +1,18 @@
 """Приём оплаты из любого канала (сайт, приложение, Telegram): файл и/или текст → оплаты."""
 
-import uuid
-from datetime import date
-
 from sqlalchemy.orm import Session
 
 from . import extractor, service
 from .config import settings
 from .extractor import ExtractionError
 from .money import fmt_money
+from .models import Attachment
 from .schemas import RecognizeItem, RecognizeResult
-
-MAX_FILE_BYTES = 10 * 1024 * 1024
-EXTENSIONS = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "application/pdf": ".pdf",
-}
-
 
 class IntakeError(Exception):
     def __init__(self, message: str, status: int = 422):
         super().__init__(message)
         self.status = status
-
-
-def _save_file(content: bytes, media_type: str) -> str:
-    name = f"{date.today():%Y-%m}/{uuid.uuid4().hex}{EXTENSIONS.get(media_type, '.bin')}"
-    path = settings.upload_dir / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    return name
 
 
 def process(
@@ -41,20 +21,31 @@ def process(
     content: bytes | None = None,
     media_type: str | None = None,
     text: str | None = None,
+    ocr_text: str | None = None,
     source: str | None = None,
 ) -> RecognizeResult:
+    """text — то, что написал человек (оплата текстом или подпись к фото);
+    ocr_text — текст чека, уже прочитанный на устройстве."""
     text = (text or "").strip()
-    if not content and not text:
+    ocr_text = (ocr_text or "").strip()
+    if not content and not text and not ocr_text:
         raise IntakeError("Пришлите фото чека или текст оплаты", 400)
 
     try:
         if content:
-            if len(content) > MAX_FILE_BYTES:
-                raise IntakeError("Файл больше 10 МБ", 413)
+            if len(content) > settings.max_upload_bytes:
+                mb = settings.max_upload_bytes // (1024 * 1024)
+                raise IntakeError(f"Файл больше {mb} МБ", 413)
             media_type = media_type or "image/jpeg"
-            found = extractor.extract_from_file(content, media_type)
+            found = extractor.extract_from_file(content, media_type, ocr_text)
             if text:
                 # Подпись к фото (например, «за Машу») помогает найти ученика.
+                for d in found:
+                    d.purpose = " ".join(filter(None, [d.purpose, text]))
+            source = source or "photo"
+        elif ocr_text:
+            found = extractor.extract_from_ocr_text(ocr_text)
+            if text:
                 for d in found:
                     d.purpose = " ".join(filter(None, [d.purpose, text]))
             source = source or "photo"
@@ -68,11 +59,16 @@ def process(
     if not found:
         raise IntakeError("Не удалось найти оплату: не видно суммы")
 
-    file_path = _save_file(content, media_type) if content else None
+    attachment_id = None
+    if content:
+        attachment = Attachment(media_type=media_type, data=content)
+        db.add(attachment)
+        db.flush()
+        attachment_id = attachment.id
     items = []
     for data in found:
         payment, cands, auto, duplicate = service.record_payment(
-            db, data, source=source, raw_text=text or None, image_path=file_path
+            db, data, source=source, raw_text=text or None, attachment_id=attachment_id
         )
         if duplicate is not None:
             message = "Уже была загружена ранее"
@@ -93,8 +89,9 @@ def process(
             )
         )
 
-    if file_path and all(i.duplicate_of for i in items):
-        service.delete_attachment_if_unused(db, file_path)
+    if attachment_id and all(i.duplicate_of for i in items):
+        service.delete_attachment_if_unused(db, attachment_id)
+        db.commit()
     return RecognizeResult(items=items, message=summary(items))
 
 

@@ -12,7 +12,8 @@ class Base(DeclarativeBase):
 
 def make_engine(url: str):
     if not url.startswith("sqlite"):
-        return create_engine(url)
+        # pre_ping: соединения serverless-Postgres (Neon) закрываются при простое.
+        return create_engine(url, pool_pre_ping=True, pool_size=2, max_overflow=3)
     engine = create_engine(url, connect_args={"check_same_thread": False})
 
     @event.listens_for(engine, "connect")

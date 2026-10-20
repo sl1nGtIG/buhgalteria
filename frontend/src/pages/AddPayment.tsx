@@ -1,5 +1,9 @@
 import { useRef, useState } from "react";
 import { api, Payment, RecognizeItem, shrinkImage } from "../api";
+import { readReceipt } from "../ocr";
+
+/** Vercel не принимает запросы больше 4,5 МБ: большие PDF отправляем только текстом. */
+const MAX_UPLOAD = 4 * 1024 * 1024;
 import { Assign } from "../components/Assign";
 import { PaymentCard } from "../components/PaymentCard";
 
@@ -51,9 +55,18 @@ export function AddPayment({ onChanged }: { onChanged: () => void }) {
         results.push({ title: "Текст", message: r.message, items: r.items });
       }
       for (const [i, p] of picked.entries()) {
-        setProgress(picked.length > 1 ? `Распознаю ${i + 1} из ${picked.length}…` : "Распознаю…");
+        const prefix = picked.length > 1 ? `${i + 1} из ${picked.length}: ` : "";
         try {
-          const r = await api.recognize(await shrinkImage(p.file), text);
+          const upload = await shrinkImage(p.file);
+          // Чек читается прямо на устройстве; сервер получает готовый текст и сам файл.
+          let ocrText = "";
+          try {
+            ocrText = await readReceipt(upload, (m) => setProgress(prefix + m));
+          } catch {
+            // Не получилось прочитать здесь — сервер попробует сам (если умеет).
+          }
+          setProgress(prefix + "Ищу ученика…");
+          const r = await api.recognize(upload.size <= MAX_UPLOAD ? upload : null, text, ocrText);
           results.push({ title: p.file.name, message: r.message, items: r.items });
         } catch (e) {
           results.push({ title: p.file.name, message: "", items: [], error: (e as Error).message });

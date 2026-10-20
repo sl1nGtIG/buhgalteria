@@ -66,7 +66,12 @@ export interface MonthReport {
 export interface Health {
   status: string;
   auth_required: boolean;
-  photo_recognition: boolean;
+  ai_recognition: boolean;
+  server_ocr: boolean;
+  telegram_bot: boolean;
+  telegram_mode: "polling" | "webhook";
+  persistent_storage: boolean;
+  max_upload_mb: number;
 }
 
 const SERVER_KEY = "buh.server";
@@ -155,6 +160,7 @@ function changed<T>(p: Promise<T>): Promise<T> {
 
 export const api = {
   health: () => request<Health>("/health"),
+  telegramSetup: () => request<{ url: string; bot: string }>("/telegram/setup", { method: "POST" }),
 
   students: () => request<Student[]>("/students"),
   createStudent: (body: unknown) => changed(request<Student>("/students", { method: "POST", body: json(body) })),
@@ -168,10 +174,12 @@ export const api = {
     changed(request<Parent>(`/parents/${id}`, { method: "PUT", body: json(body) })),
   deleteParent: (id: number) => changed(request<void>(`/parents/${id}`, { method: "DELETE" })),
 
-  recognize: (file: Blob | null, text: string) => {
+  /** file — сам чек (для хранения), ocrText — его текст, прочитанный на устройстве. */
+  recognize: (file: Blob | null, text: string, ocrText = "") => {
     const form = new FormData();
     if (file) form.append("file", file, file instanceof File ? file.name : "receipt.jpg");
     if (text.trim()) form.append("text", text.trim());
+    if (ocrText.trim()) form.append("ocr_text", ocrText.trim());
     return request<RecognizeResult>("/payments/recognize", { method: "POST", body: form });
   },
   payments: (params: { status?: string; month?: string; student_id?: string; parent_id?: string }) => {

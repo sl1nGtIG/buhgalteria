@@ -49,7 +49,7 @@ def test_text_payment_confirmed(client):
 def test_photo_needs_review_then_button(client, monkeypatch):
     _, masha = seed(client)
     rec = receipt(amount=4000, date="2026-10-10", purpose="Кузнецова", operation_id="T1")
-    monkeypatch.setattr(extractor, "extract_from_file", lambda c, mt: [rec.model_copy()])
+    monkeypatch.setattr(extractor, "extract_from_file", lambda *a: [rec.model_copy()])
     bot = Bot(FakeClient(), allowed_chats={CHAT})
     run(bot, message(photo=[{"file_id": "small"}, {"file_id": "big"}], caption=""))
 
@@ -90,3 +90,23 @@ def test_client_download_uses_file_path():
             return await TelegramClient("TOKEN", http).download("abc")
 
     assert asyncio.run(go()) == b"jpeg"
+
+
+def test_webhook_requires_secret_and_handles_update(client, monkeypatch):
+    from app.config import settings
+    from app.routers import telegram as tg
+
+    seed(client)
+    monkeypatch.setattr(settings, "telegram_bot_token", "123:ABC")
+    monkeypatch.setattr(settings, "telegram_allowed_chats", {CHAT})
+    fake = FakeClient()
+    monkeypatch.setattr(tg, "TelegramClient", lambda token, http: fake)
+
+    update = message(text="Сидоров Саша 5000")
+    assert client.post("/api/telegram/webhook", json=update).status_code == 403
+    r = client.post(
+        "/api/telegram/webhook", json=update,
+        headers={"X-Telegram-Bot-Api-Secret-Token": tg.webhook_secret()},
+    )
+    assert r.status_code == 200
+    assert fake.sent()[0]["text"].startswith("✅")

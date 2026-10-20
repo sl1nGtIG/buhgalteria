@@ -40,7 +40,7 @@ def test_photo_payment_and_learning(client, monkeypatch):
     sasha, masha = seed(client)
     rec = receipt(amount=4000, date="2026-10-10", payer_name="Елена Сергеевна К.",
                   bank="Сбербанк", operation_id="OP-1")
-    monkeypatch.setattr(extractor, "extract_from_file", lambda content, mt: [rec.model_copy()])
+    monkeypatch.setattr(extractor, "extract_from_file", lambda *a: [rec.model_copy()])
     files = {"file": ("check.jpg", b"\xff\xd8fake", "image/jpeg")}
 
     r = client.post("/api/payments/recognize", files=files)
@@ -102,7 +102,7 @@ def test_statement_with_several_payments(client, monkeypatch):
         receipt(amount=5000, date="2026-10-03", payer_name="Иван Петрович С.", operation_id="A"),
         receipt(amount=4000, date="2026-10-04", payer_name="Неизвестный Н.", operation_id="B"),
     ]
-    monkeypatch.setattr(extractor, "extract_from_file", lambda content, mt: [f.model_copy() for f in found])
+    monkeypatch.setattr(extractor, "extract_from_file", lambda *a: [f.model_copy() for f in found])
     r = client.post("/api/payments/recognize", files={"file": ("st.pdf", b"%PDF-1.4", "application/pdf")})
     body = r.json()
     assert [i["auto_confirmed"] for i in body["items"]] == [True, False]
@@ -134,7 +134,7 @@ def test_edit_amount_keeps_assignment(client):
 def test_deleting_student_unlinks_payments_and_forgets_payer(client, monkeypatch):
     sasha, masha = seed(client)
     rec = receipt(amount=4000, date="2026-10-10", payer_name="Елена Сергеевна К.", operation_id="X1")
-    monkeypatch.setattr(extractor, "extract_from_file", lambda c, mt: [rec.model_copy()])
+    monkeypatch.setattr(extractor, "extract_from_file", lambda *a: [rec.model_copy()])
     files = {"file": ("c.jpg", b"\xff\xd8", "image/jpeg")}
     pid = client.post("/api/payments/recognize", files=files).json()["items"][0]["payment"]["id"]
     client.patch(f"/api/payments/{pid}", json={"student_id": masha["id"]})
@@ -145,3 +145,55 @@ def test_deleting_student_unlinks_payments_and_forgets_payer(client, monkeypatch
     rec.operation_id, rec.date = "X2", "2026-11-10"
     item = client.post("/api/payments/recognize", files=files).json()["items"][0]
     assert item["auto_confirmed"] is False
+
+
+SBER_TEXT = """СБЕР
+Чек по операции
+19 октября 2026 14:35:12 (МСК)
+ФИО отправителя Иван Петрович С.
+Сумма перевода 5 000,00 ₽
+Комиссия 0,00 ₽
+Номер документа 777000111
+"""
+
+
+def test_photo_read_on_device_is_parsed_without_ai(client):
+    sasha, _ = seed(client)
+    files = {"file": ("check.jpg", b"\xff\xd8fake", "image/jpeg")}
+    r = client.post("/api/payments/recognize", files=files, data={"ocr_text": SBER_TEXT})
+    item = r.json()["items"][0]
+    assert item["auto_confirmed"] is True
+    assert item["payment"]["student"]["id"] == sasha["id"]
+    assert item["payment"]["operation_id"] == "777000111"
+    assert item["payment"]["attachment"] == "image"
+
+
+def test_ocr_text_without_file(client):
+    sasha, _ = seed(client)
+    r = client.post("/api/payments/recognize", data={"ocr_text": SBER_TEXT, "text": "за октябрь"})
+    item = r.json()["items"][0]
+    assert item["payment"]["amount"] == 5000
+    assert item["payment"]["student"]["id"] == sasha["id"]
+
+
+def test_photo_without_text_and_without_server_ocr(client, monkeypatch):
+    from app import ocr
+
+    monkeypatch.setattr(ocr, "tesseract_available", lambda: False)
+    r = client.post("/api/payments/recognize", files={"file": ("c.jpg", b"\xff\xd8", "image/jpeg")})
+    assert r.status_code == 422
+    assert "текстом" in r.json()["detail"]
+
+
+def test_pdf_without_text_layer_is_reported(client):
+    import io
+
+    from pypdf import PdfWriter
+
+    seed(client)
+    buf = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(100, 100)
+    writer.write(buf)
+    r = client.post("/api/payments/recognize", files={"file": ("c.pdf", buf.getvalue(), "application/pdf")})
+    assert r.status_code == 422

@@ -1,0 +1,25 @@
+# Нужен для деплоя на Vercel: зависимости сервера и точка входа FastAPI.
+# Локально и в Docker используется backend/requirements.txt (те же версии).
+[project]
+name = "buhgalteria"
+version = "0.3.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.147.0",
+    "SQLAlchemy==2.1.5",
+    "anthropic==1.15.0",
+    "rapidfuzz==3.14.6",
+    "python-multipart==0.0.32",
+    "pydantic==2.14.1",
+    "httpx==0.28.1",
+    "psycopg[binary]==3.3.6",
+    "pypdf==6.21.1",
+]
+
+[tool.vercel]
+entrypoint = "backend.app.main:app"
+
+[tool.vercel.fastapi.static]
+# Сайт публичный (данные защищены кодом доступа в API), поэтому раздаём его с CDN.
+cdn = true
+exclude = true

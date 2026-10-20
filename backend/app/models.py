@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, LargeBinary, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -56,6 +56,17 @@ class PayerAlias(Base):
     student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
 
 
+class Attachment(Base):
+    """Файл чека. Хранится в базе, чтобы работать и на серверах без постоянного диска (Vercel)."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    media_type: Mapped[str] = mapped_column(String(50))
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)  # не тянуть файл в списки оплат
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
 class Payment(Base):
     __tablename__ = "payments"
 
@@ -71,7 +82,9 @@ class Payment(Base):
     raw_text: Mapped[str | None] = mapped_column(Text)
     # photo | text | manual
     source: Mapped[str] = mapped_column(String(20))
-    image_path: Mapped[str | None] = mapped_column(String(300))
+    attachment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attachments.id", ondelete="SET NULL"), index=True
+    )
     student_id: Mapped[int | None] = mapped_column(ForeignKey("students.id", ondelete="SET NULL"))
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("parents.id", ondelete="SET NULL"))
     # confirmed | needs_review
@@ -81,3 +94,4 @@ class Payment(Base):
 
     student: Mapped[Student | None] = relationship()
     parent: Mapped[Parent | None] = relationship()
+    attachment_file: Mapped[Attachment | None] = relationship()

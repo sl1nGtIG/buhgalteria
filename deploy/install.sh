@@ -38,14 +38,12 @@ if [ ! -f .env ]; then
   echo
   echo "==> Настройка (Enter — пропустить)"
   domain=$(ask "Домен для сайта, например buh.example.ru (без домена — доступ по IP): ")
-  claude_key=$(ask "Ключ Claude API для распознавания фото (sk-ant-...): ")
   tg_token=$(ask "Токен Telegram-бота от @BotFather: ")
   app_token=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)
   if [ -n "$domain" ]; then bind="127.0.0.1:8000"; else bind="80"; fi
   umask 077
   cat > .env <<ENV
 APP_TOKEN=$app_token
-ANTHROPIC_API_KEY=$claude_key
 TELEGRAM_BOT_TOKEN=$tg_token
 TELEGRAM_ALLOWED_CHATS=
 DOMAIN=$domain

@@ -8,6 +8,11 @@ RUN npm run build
 
 # Сервер
 FROM python:3.13-slim
+# Tesseract читает фото чеков, присланные в Telegram-бота (в приложении и на сайте чек
+# читается прямо на устройстве).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

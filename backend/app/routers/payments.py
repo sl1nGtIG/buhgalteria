@@ -2,12 +2,11 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import extract, select
 from sqlalchemy.orm import Session
 
 from .. import intake, service
-from ..config import settings
 from ..db import get_db
 from ..models import Parent, Payment, Student
 from ..schemas import CandidateOut, ManualPaymentIn, PaymentOut, PaymentUpdate, RecognizeResult
@@ -25,13 +24,18 @@ def _get(db: Session, payment_id: int) -> Payment:
 async def recognize(
     file: UploadFile | None = File(default=None),
     text: str | None = Form(default=None),
+    ocr_text: str | None = Form(default=None, description="Текст чека, прочитанный на устройстве"),
     db: Session = Depends(get_db),
 ):
     """Главный сценарий: прислали фото/PDF чека и/или текст — система сама фиксирует оплату."""
     content = await file.read() if file is not None else None
     try:
         return intake.process(
-            db, content=content, media_type=file.content_type if file else None, text=text
+            db,
+            content=content,
+            media_type=file.content_type if file else None,
+            text=text,
+            ocr_text=ocr_text,
         )
     except intake.IntakeError as e:
         raise HTTPException(status_code=e.status, detail=str(e)) from e
@@ -133,12 +137,13 @@ def get_candidates(payment_id: int, db: Session = Depends(get_db)):
 @router.get("/{payment_id}/image")
 def get_image(payment_id: int, db: Session = Depends(get_db)):
     payment = _get(db, payment_id)
-    if not payment.image_path:
+    if payment.attachment_file is None:
         raise HTTPException(status_code=404, detail="У оплаты нет чека")
-    path = (settings.upload_dir / payment.image_path).resolve()
-    if not path.is_relative_to(settings.upload_dir.resolve()) or not path.exists():
-        raise HTTPException(status_code=404, detail="Фото не найдено")
-    return FileResponse(path)
+    return Response(
+        content=payment.attachment_file.data,
+        media_type=payment.attachment_file.media_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.patch("/{payment_id}", response_model=PaymentOut)
@@ -166,8 +171,10 @@ def update_payment(payment_id: int, body: PaymentUpdate, db: Session = Depends(g
 @router.delete("/{payment_id}", status_code=204)
 def delete_payment(payment_id: int, db: Session = Depends(get_db)):
     payment = _get(db, payment_id)
-    service.delete_attachment_if_unused(db, payment.image_path, except_id=payment.id)
+    attachment_id = payment.attachment_id
     db.delete(payment)
+    db.flush()
+    service.delete_attachment_if_unused(db, attachment_id)
     db.commit()
 
 
