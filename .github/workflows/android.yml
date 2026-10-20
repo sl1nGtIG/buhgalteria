@@ -27,6 +27,9 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: android-actions/setup-android@v3
+        with:
+          # По умолчанию экшен ставит пакет «tools», которого нет в новых cmdline-tools.
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
       - run: npm ci
       # Адрес сервера можно «зашить» в APK через переменную репозитория API_URL
       # (Settings → Secrets and variables → Actions → Variables). Иначе он вводится в настройках приложения.
