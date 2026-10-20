@@ -2,8 +2,28 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      # Без домена сайт открывается по http://<IP сервера>:<порт>; с доменом наружу смотрит Caddy.
+      - "${APP_BIND:-8000}:8000"
     env_file: .env
     volumes:
       - ./data:/data
     restart: unless-stopped
+
+  # HTTPS с автоматическим сертификатом: docker compose --profile https up -d
+  caddy:
+    image: caddy:2.8.4
+    profiles: [https]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
