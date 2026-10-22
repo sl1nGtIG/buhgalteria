@@ -29,6 +29,11 @@ export function Payments({ onChanged }: { onChanged: () => void }) {
     onChanged();
   }
 
+  function replace(p: Payment) {
+    setItems((list) => list.map((x) => (x.id === p.id ? p : x)));
+    onChanged();
+  }
+
   async function remove(p: Payment) {
     if (!confirm(`Удалить оплату ${money(p.amount)}?`)) return;
     try {
@@ -73,7 +78,7 @@ export function Payments({ onChanged }: { onChanged: () => void }) {
         <div className="empty">{status === "needs_review" ? "Все оплаты разобраны 🎉" : "Оплат нет"}</div>
       )}
       {items.map((p) => (
-        <PaymentCard key={p.id} payment={p}>
+        <PaymentCard key={p.id} payment={p} onChange={replace}>
           {p.status === "needs_review" || editing === p.id ? (
             <Assign payment={p} onDone={updated} />
           ) : (

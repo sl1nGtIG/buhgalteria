@@ -8,13 +8,14 @@ from sqlalchemy.orm import Session, selectinload
 from . import matcher
 from .config import settings
 from .extractor import ReceiptData
-from .models import Parent, PayerAlias, Payment, Student
+from .models import Attachment, Parent, PayerAlias, Payment, Student
 from .schemas import CandidateOut, ParentBrief, PaymentOut, StudentBrief
 
 
 def payment_out(p: Payment) -> PaymentOut:
     out = PaymentOut.model_validate(p)
-    out.has_image = bool(p.image_path)
+    if p.attachment_id:
+        out.attachment = "pdf" if p.attachment_file.media_type == "application/pdf" else "image"
     return out
 
 
@@ -87,7 +88,7 @@ def record_payment(
     *,
     source: str,
     raw_text: str | None = None,
-    image_path: str | None = None,
+    attachment_id: int | None = None,
 ):
     """Создаёт оплату и пытается сама привязать её к ученику/родителю.
 
@@ -109,7 +110,7 @@ def record_payment(
         operation_id=data.operation_id,
         raw_text=raw_text,
         source=source,
-        image_path=image_path,
+        attachment_id=attachment_id,
         status="needs_review",
     )
     cands = candidates_for(db, payment, data.student_name)
@@ -143,3 +144,35 @@ def remember_payer(db: Session, payment: Payment) -> None:
     parent = db.get(Parent, payment.parent_id) if payment.parent_id else None
     if parent and len(parent.students) > 1:
         row.student_id = None
+
+
+def assign_payment(
+    db: Session, payment: Payment, student_id: int | None, parent_id: int | None, remember: bool = True
+) -> Payment:
+    """Ручная привязка оплаты: подтверждает её и запоминает плательщика."""
+    payment.student_id = student_id
+    payment.parent_id = parent_id
+    if student_id or parent_id:
+        payment.status = "confirmed"
+        payment.confidence = 1.0
+        if remember:
+            db.flush()
+            remember_payer(db, payment)
+    else:
+        payment.status = "needs_review"
+    db.commit()
+    db.refresh(payment)
+    return payment
+
+
+def delete_attachment_if_unused(db: Session, attachment_id: int | None, except_id: int | None = None) -> None:
+    """Один файл может принадлежать нескольким оплатам (выписка) — удаляем, когда он больше не нужен."""
+    if not attachment_id:
+        return
+    q = select(Payment.id).where(Payment.attachment_id == attachment_id)
+    if except_id is not None:
+        q = q.where(Payment.id != except_id)
+    if db.scalar(q.limit(1)) is None:
+        attachment = db.get(Attachment, attachment_id)
+        if attachment is not None:
+            db.delete(attachment)

@@ -1,0 +1,6 @@
+.venv
+data
+frontend/node_modules
+frontend/dist
+frontend/public/ocr
+frontend/android/app/build

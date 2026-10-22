@@ -19,6 +19,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
 export function App() {
   const [tab, setTab] = useState<Tab>(needsSetup() ? "settings" : "add");
   const [pending, setPending] = useState(0);
+  const [volatile, setVolatile] = useState(false);
 
   const refreshPending = useCallback(() => {
     if (needsSetup()) return;
@@ -31,6 +32,9 @@ export function App() {
   }, []);
 
   useEffect(refreshPending, [refreshPending]);
+  useEffect(() => {
+    if (!needsSetup()) api.health().then((h) => setVolatile(!h.persistent_storage)).catch(() => {});
+  }, [tab]);
 
   return (
     <div className="app">
@@ -38,6 +42,12 @@ export function App() {
         <span className="logo">₽</span> Бухгалтерия
       </header>
       <main>
+        {volatile && (
+          <div className="error">
+            Сервер работает без базы данных — всё введённое пропадёт при его перезапуске. Подключите Postgres
+            (на Vercel: Storage → Neon) и сделайте Redeploy.
+          </div>
+        )}
         {tab === "add" && <AddPayment onChanged={refreshPending} />}
         {tab === "payments" && <Payments onChanged={refreshPending} />}
         {tab === "students" && <Students />}

@@ -159,6 +159,8 @@ def find_candidates(data: MatchInput, students, parents, aliases=()) -> list[Can
     alias_hits: list[Candidate] = []
     norm_payer = normalize(payer_text)
     for a in aliases:
+        if a.student_id and a.student_id not in student_by_id:
+            continue  # ученик выбыл
         if norm_payer and a.alias == norm_payer:
             alias_hits.append(Candidate(a.student_id, a.parent_id, 0.99, ["плательщик уже встречался ранее"]))
 

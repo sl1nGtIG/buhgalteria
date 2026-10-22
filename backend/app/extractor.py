@@ -28,6 +28,12 @@ class ReceiptData(BaseModel):
     operation_id: str | None = Field(description="Номер операции / документа / квитанции")
 
 
+class ReceiptBatch(BaseModel):
+    payments: list[ReceiptData] = Field(
+        description="Все оплаты, найденные в источнике (обычно одна; в выписке может быть несколько)"
+    )
+
+
 class ExtractionError(Exception):
     pass
 
@@ -36,7 +42,12 @@ SYSTEM_PROMPT = """Ты помогаешь бухгалтеру учебного
 Тебе присылают скриншот или фото банковского чека (Сбербанк, Т-Банк, ВТБ, СБП и др.)
 или короткое сообщение вроде «Иванов Петя 5000 за октябрь».
 
-Извлеки поля оплаты. Правила:
+Также бывают PDF-квитанции и скриншоты истории операций / выписки, где видно сразу несколько
+переводов, — тогда верни каждый перевод отдельной записью в payments. Бери только переводы
+за обучение: чек об отправке денег от родителя или входящие поступления в выписке получателя.
+Пропускай покупки, списания, комиссии и прочие не относящиеся операции.
+
+Извлеки поля каждой оплаты. Правила:
 - amount — сумма перевода в рублях числом (без комиссии). «5 000,00 ₽» → 5000.
 - date — дата операции в формате YYYY-MM-DD. Если год не указан, считай текущий год.
 - payer_name — отправитель так, как написано в чеке (банки часто сокращают: «Иван Петрович С.»).
@@ -50,14 +61,18 @@ def _client() -> anthropic.Anthropic:
     return anthropic.Anthropic()
 
 
-def _ask_claude(content: list[dict]) -> ReceiptData:
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/gif", "image/webp")
+SUPPORTED_TYPES = IMAGE_TYPES + ("application/pdf",)
+
+
+def _ask_claude(content: list[dict]) -> list[ReceiptData]:
     try:
         response = _client().beta.messages.parse(
             model=settings.claude_model,
-            max_tokens=4000,
+            max_tokens=16000,
             system=SYSTEM_PROMPT.format(today=date.today().isoformat()),
             messages=[{"role": "user", "content": content}],
-            output_format=ReceiptData,
+            output_format=ReceiptBatch,
             output_config={"effort": "low"},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
@@ -70,35 +85,58 @@ def _ask_claude(content: list[dict]) -> ReceiptData:
         raise ExtractionError(f"Ошибка сервиса распознавания ({e.status_code})") from e
 
     if response.stop_reason == "refusal":
-        raise ExtractionError("Сервис распознавания отказался обрабатывать изображение")
+        raise ExtractionError("Сервис распознавания отказался обрабатывать файл")
     if response.parsed_output is None:
         raise ExtractionError("Не удалось разобрать ответ сервиса распознавания")
-    return response.parsed_output
+    return [p for p in response.parsed_output.payments if p.is_payment or p.amount is not None]
 
 
-def extract_from_image(image: bytes, media_type: str) -> ReceiptData:
-    if not settings.anthropic_enabled:
+def extract_from_file(content: bytes, media_type: str, ocr_text: str | None = None) -> list[ReceiptData]:
+    """Фото, скриншот или PDF-квитанция → список оплат.
+
+    По умолчанию работает без внешних API: текст чека читается на устройстве (ocr_text) или на
+    сервере (текстовый слой PDF, Tesseract) и разбирается парсером чеков. Если задан ключ
+    Claude API, распознавание выполняет модель — так точнее на плохих фото.
+    """
+    if media_type not in SUPPORTED_TYPES:
+        raise ExtractionError(f"Неподдерживаемый формат файла: {media_type}")
+    if settings.anthropic_enabled:
+        data = base64.standard_b64encode(content).decode("utf-8")
+        source = {"type": "base64", "media_type": media_type, "data": data}
+        kind = "document" if media_type == "application/pdf" else "image"
+        try:
+            return _ask_claude([{"type": kind, "source": source},
+                                {"type": "text", "text": "Извлеки данные оплаты из этого чека."}])
+        except ExtractionError:
+            if not ocr_text:
+                raise
+
+    from . import ocr
+    from .receipt_parser import parse_receipt
+
+    text = (ocr_text or "").strip() or ocr.file_text(content, media_type)
+    if not text:
         raise ExtractionError(
-            "Распознавание фото не настроено: задайте ANTHROPIC_API_KEY на сервере"
+            "Не удалось прочитать чек на сервере. Загрузите его через сайт или приложение "
+            "(там чек читается прямо на устройстве) или напишите оплату текстом."
         )
-    if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
-        raise ExtractionError(f"Неподдерживаемый формат изображения: {media_type}")
-    data = base64.standard_b64encode(image).decode("utf-8")
-    return _ask_claude(
-        [
-            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}},
-            {"type": "text", "text": "Извлеки данные оплаты из этого чека."},
-        ]
-    )
+    return parse_receipt(text)
 
 
-def extract_from_text(text: str) -> ReceiptData:
+def extract_from_ocr_text(ocr_text: str) -> list[ReceiptData]:
+    """Чек уже прочитан на устройстве, а сам файл не прислан (например, слишком большой PDF)."""
+    from .receipt_parser import parse_receipt
+
+    return parse_receipt(ocr_text)
+
+
+def extract_from_text(text: str) -> list[ReceiptData]:
     if settings.anthropic_enabled:
         try:
             return _ask_claude([{"type": "text", "text": text}])
         except ExtractionError:
             pass  # для текста есть запасной разбор без нейросети
-    return parse_text_locally(text)
+    return parse_text_locally_multi(text)
 
 
 # --- Разбор текста без нейросети -------------------------------------------------
@@ -133,6 +171,16 @@ def _parse_date(text: str, today: date) -> tuple[date | None, str]:
         except ValueError:
             pass
     return None, text
+
+
+def parse_text_locally_multi(text: str, today: date | None = None) -> list[ReceiptData]:
+    """Несколько строк, в каждой своя сумма («Сидоров 5000\nКузнецова 4000») → несколько оплат."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > 1:
+        parsed = [parse_text_locally(line, today) for line in lines]
+        if all(p.amount is not None for p in parsed):
+            return parsed
+    return [parse_text_locally(text, today)]
 
 
 def parse_text_locally(text: str, today: date | None = None) -> ReceiptData:
