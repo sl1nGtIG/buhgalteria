@@ -53,7 +53,7 @@ jobs:
           name: buhgalteria-apk
           path: frontend/buhgalteria.apk
       - name: Выложить APK на сайт (только main)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           mkdir -p public/download
           cp buhgalteria.apk public/download/buhgalteria.apk

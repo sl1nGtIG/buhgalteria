@@ -8,4 +8,6 @@ data/
 *.db
 .env
 *.apk
+# APK для скачивания с сайта кладёт сборка GitHub Actions
+!frontend/public/download/buhgalteria.apk
 frontend/public/ocr/
