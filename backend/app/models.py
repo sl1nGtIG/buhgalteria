@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, LargeBinary, String, Table, Text
+from sqlalchemy import BigInteger, Column, Date, DateTime, Float, ForeignKey, LargeBinary, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -95,3 +95,28 @@ class Payment(Base):
     student: Mapped[Student | None] = relationship()
     parent: Mapped[Parent | None] = relationship()
     attachment_file: Mapped[Attachment | None] = relationship()
+
+
+class User(Base):
+    """Пользователь, вошедший через Telegram. Первый вошедший становится владельцем."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    username: Mapped[str | None] = mapped_column(String(100))
+    is_owner: Mapped[bool] = mapped_column(default=False)
+    # Владелец разрешает доступ остальным.
+    approved: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class LoginCode(Base):
+    """Одноразовый код входа: сайт показывает ссылку на бота, бот подтверждает код."""
+
+    __tablename__ = "login_codes"
+
+    code: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

@@ -6,10 +6,10 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import ocr
-from .auth import require_token
+from .auth import auth_mode, require_token
 from .config import settings
 from .db import Base, engine
-from .routers import payments, people, reports, telegram
+from .routers import auth, payments, people, reports, telegram
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,8 +31,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    if not settings.app_token:
-        logging.getLogger("app").warning("APP_TOKEN не задан — API открыт без пароля!")
+    if auth_mode() == "none":
+        logging.getLogger("app").warning("Вход не настроен (нет TELEGRAM_BOT_TOKEN и APP_TOKEN) — API открыт всем!")
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
 
@@ -46,7 +46,8 @@ def create_app() -> FastAPI:
     def health():
         return {
             "status": "ok",
-            "auth_required": bool(settings.app_token),
+            "auth_required": auth_mode() != "none",
+            "auth_mode": auth_mode(),
             # Фото всегда можно распознать на устройстве; это — дополнительные способы на сервере.
             "ai_recognition": settings.anthropic_enabled,
             "server_ocr": ocr.tesseract_available(),
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
         app.include_router(r, prefix="/api", dependencies=protected)
     # Вебхук проверяет собственный секрет Telegram, а /setup защищён кодом доступа внутри.
     app.include_router(telegram.router, prefix="/api")
+    app.include_router(auth.router, prefix="/api")
 
     dist = settings.frontend_dist
     if dist.is_dir():
