@@ -25,6 +25,8 @@ class Settings:
         self.persistent_storage = not (self.on_vercel and self.database_url.startswith("sqlite"))
         # Код доступа к API. Пусто — авторизация выключена (только для локальной разработки).
         self.app_token = os.getenv("APP_TOKEN", "")
+        # Секрет для подписи сессий входа через Telegram (по умолчанию выводится из токена бота).
+        self.session_secret = os.getenv("SESSION_SECRET", "")
         self.claude_model = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
         self.anthropic_enabled = bool(
             os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")

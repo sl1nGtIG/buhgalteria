@@ -63,9 +63,21 @@ export interface MonthReport {
   parent_only: { parent: ParentBrief; paid: number }[];
   needs_review: number;
 }
+export interface User {
+  id: number;
+  name: string;
+  username: string | null;
+  is_owner: boolean;
+  approved: boolean;
+}
+export type PollResult =
+  | { status: "waiting" | "pending" | "expired" }
+  | { status: "ok"; token: string; user: User };
+
 export interface Health {
   status: string;
   auth_required: boolean;
+  auth_mode: "telegram" | "token" | "none";
   ai_recognition: boolean;
   server_ocr: boolean;
   telegram_bot: boolean;
@@ -110,6 +122,16 @@ export function saveSettings(next: { serverUrl: string; token: string }) {
   write(TOKEN_KEY, token);
 }
 
+/** Сохранить сессию после входа через Telegram (или очистить при выходе). */
+export function saveToken(next: string) {
+  peopleCache = null;
+  token = next;
+  write(TOKEN_KEY, token);
+}
+
+/** Сервер ответил «нужно войти» — приложение покажет экран входа. */
+export const UNAUTHORIZED_EVENT = "buh:unauthorized";
+
 /** В приложении без адреса сервера работать нельзя — сайт же обслуживается самим сервером. */
 export function needsSetup() {
   return isNative && !serverUrl;
@@ -133,6 +155,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => null);
+  if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
   if (!res.ok) {
     const detail = data?.detail;
     const msg = typeof detail === "string" ? detail : `Ошибка сервера (${res.status})`;
@@ -160,6 +183,12 @@ function changed<T>(p: Promise<T>): Promise<T> {
 
 export const api = {
   health: () => request<Health>("/health"),
+  authStart: () => request<{ code: string; url: string }>("/auth/start", { method: "POST" }),
+  authPoll: (code: string) => request<PollResult>(`/auth/poll?code=${encodeURIComponent(code)}`),
+  me: () => request<{ mode: string; user: User | null }>("/auth/me"),
+  users: () => request<User[]>("/auth/users"),
+  approveUser: (id: number) => request<User>(`/auth/users/${id}/approve`, { method: "POST" }),
+  removeUser: (id: number) => request<void>(`/auth/users/${id}`, { method: "DELETE" }),
   telegramSetup: () => request<{ url: string; bot: string }>("/telegram/setup", { method: "POST" }),
 
   students: () => request<Student[]>("/students"),

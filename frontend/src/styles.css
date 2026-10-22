@@ -177,3 +177,15 @@ label.grow { flex: 1; min-width: 140px; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: var(--bg); }
 tr.history td { background: var(--bg); padding: 8px 12px; }
+
+a.button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+a.button.wide { width: 100%; }
+.banner { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-weight: 500; }
+.banner span { flex: 1; }
+.banner .button { min-height: 36px; padding: 6px 14px; }
+
+header .user { margin-left: auto; float: right; font-size: 14px; font-weight: 400; opacity: 0.85; }
+.login { max-width: 420px; margin: 8vh auto 0; }
+a.button.tg { background: #2aabee; border-color: #2aabee; color: #fff; }
+li.row { padding: 4px 0; }
+span.grow { flex: 1; }

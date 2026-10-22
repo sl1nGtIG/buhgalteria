@@ -9,7 +9,7 @@
     "prebuild": "node scripts/copy-ocr.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "android:sync": "npm run build && cap sync android",
+    "android:sync": "npm run build && node -e \"require('fs').rmSync('dist/download',{recursive:true,force:true})\" && cap sync android",
     "android:open": "cap open android"
   },
   "dependencies": {

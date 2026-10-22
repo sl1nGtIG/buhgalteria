@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # APK пересобирается, только когда меняется само приложение.
+    paths:
+      - "frontend/**"
+      - "!frontend/public/download/**"
+      - ".github/workflows/android.yml"
   pull_request:
   workflow_dispatch:
 
@@ -31,11 +36,14 @@ jobs:
           # По умолчанию экшен ставит пакет «tools», которого нет в новых cmdline-tools.
           packages: "platform-tools platforms;android-36 build-tools;36.0.0"
       - run: npm ci
-      # Адрес сервера можно «зашить» в APK через переменную репозитория API_URL
-      # (Settings → Secrets and variables → Actions → Variables). Иначе он вводится в настройках приложения.
+      # Адрес сервера «зашивается» в APK, чтобы после установки ничего не настраивать.
+      # Другой адрес можно задать переменной репозитория API_URL
+      # (Settings → Secrets and variables → Actions → Variables).
       - run: npm run build
         env:
-          VITE_API_URL: ${{ vars.API_URL }}
+          VITE_API_URL: ${{ vars.API_URL || 'https://buhgalteria-lime.vercel.app' }}
+      # Предыдущий APK для скачивания с сайта не должен попасть внутрь нового.
+      - run: rm -rf dist/download
       - run: npx cap sync android
       - run: ./gradlew assembleDebug --no-daemon
         working-directory: frontend/android
@@ -44,6 +52,17 @@ jobs:
         with:
           name: buhgalteria-apk
           path: frontend/buhgalteria.apk
+      - name: Выложить APK на сайт (только main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p public/download
+          cp buhgalteria.apk public/download/buhgalteria.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/download/buhgalteria.apk
+          git commit -m "APK для скачивания с сайта (сборка ${GITHUB_SHA::7})"
+          git pull --rebase origin main
+          git push origin HEAD:main
       - name: Публикация в Releases (для тегов v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

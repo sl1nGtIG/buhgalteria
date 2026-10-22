@@ -9,10 +9,10 @@ import logging
 
 import httpx
 
-from . import intake, service
+from . import accounts, intake, service
 from .db import SessionLocal
 from .extractor import SUPPORTED_TYPES
-from .models import Payment
+from .models import Payment, User
 from .money import fmt_money
 from .schemas import PaymentOut, RecognizeItem
 
@@ -118,9 +118,18 @@ class Bot:
             params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
         await self.client.call("sendMessage", **params)
 
+    def _is_allowed(self, chat_id: int) -> bool:
+        if chat_id in self.allowed:
+            return True
+        with self.session_factory() as db:
+            return chat_id in accounts.approved_telegram_ids(db)
+
     async def on_message(self, msg: dict) -> None:
         chat_id = msg["chat"]["id"]
         text = msg.get("text") or msg.get("caption") or ""
+        if text.startswith(f"/start {accounts.START_PREFIX}") and msg.get("from"):
+            await self.on_login(chat_id, text.split(accounts.START_PREFIX, 1)[1].strip(), msg["from"])
+            return
         if text.startswith("/start") or text.startswith("/id"):
             await self.reply(
                 chat_id,
@@ -128,11 +137,11 @@ class Bot:
                 f"я зафиксирую оплату.\n\nID этого чата: {chat_id}",
             )
             return
-        if chat_id not in self.allowed:
+        if not await asyncio.to_thread(self._is_allowed, chat_id):
             await self.reply(
                 chat_id,
-                f"Нет доступа. Попросите администратора добавить ID чата {chat_id} "
-                "в настройку TELEGRAM_ALLOWED_CHATS.",
+                "Нет доступа. Войдите на сайте или в приложении через Telegram — "
+                "владелец получит запрос и разрешит доступ.",
             )
             return
 
@@ -166,10 +175,62 @@ class Bot:
             replies.insert(0, (result.message, None))
         return replies
 
+    async def on_login(self, chat_id: int, code: str, tg_user: dict) -> None:
+        def run():
+            with self.session_factory() as db:
+                status, user = accounts.confirm(db, code, tg_user)
+                boss = accounts.owner(db)
+                return status, user and accounts.user_out(user), boss and boss.telegram_id
+
+        status, user, owner_chat = await asyncio.to_thread(run)
+        if status == "expired":
+            await self.reply(chat_id, "Ссылка для входа устарела. Нажмите «Войти через Telegram» ещё раз.")
+        elif status == "ok":
+            await self.reply(chat_id, "✅ Вход выполнен. Вернитесь на сайт или в приложение.")
+        else:
+            await self.reply(chat_id, "⏳ Запрос на доступ отправлен владельцу. Как только он разрешит — вход завершится сам.")
+            if owner_chat:
+                who = user["name"] + (f" (@{user['username']})" if user["username"] else "")
+                await self.reply(
+                    owner_chat,
+                    f"🔑 {who} просит доступ к бухгалтерии.",
+                    {"inline_keyboard": [[{"text": "Разрешить", "callback_data": f"u:{user['id']}"}]]},
+                )
+
+    async def on_user_approve(self, cq: dict, user_id: int) -> None:
+        def run():
+            with self.session_factory() as db:
+                boss = accounts.owner(db)
+                if boss is None or boss.telegram_id != cq["from"]["id"]:
+                    return None
+                user = db.get(User, user_id)
+                if user is None:
+                    return None
+                user.approved = True
+                db.commit()
+                return user.name, user.telegram_id
+
+        result = await asyncio.to_thread(run)
+        if result is None:
+            await self.client.call("answerCallbackQuery", callback_query_id=cq["id"], text="Нет прав")
+            return
+        name, tg_id = result
+        await self.client.call("answerCallbackQuery", callback_query_id=cq["id"], text="Доступ разрешён")
+        msg = cq.get("message") or {}
+        await self.client.call(
+            "editMessageText", chat_id=msg["chat"]["id"], message_id=msg["message_id"],
+            text=f"✅ Доступ для {name} разрешён.",
+        )
+        await self.reply(tg_id, "✅ Владелец разрешил доступ. Вернитесь на сайт или в приложение.")
+
     async def on_callback(self, cq: dict) -> None:
+        data = cq.get("data", "")
+        if data.startswith("u:"):
+            await self.on_user_approve(cq, int(data[2:]))
+            return
         msg = cq.get("message") or {}
         chat_id = msg.get("chat", {}).get("id")
-        if chat_id not in self.allowed:
+        if not await asyncio.to_thread(self._is_allowed, chat_id):
             await self.client.call("answerCallbackQuery", callback_query_id=cq["id"], text="Нет доступа")
             return
         try:

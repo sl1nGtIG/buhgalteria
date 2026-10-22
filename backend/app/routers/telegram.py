@@ -23,6 +23,13 @@ def webhook_secret() -> str:
     return hashlib.sha256(f"webhook:{settings.telegram_bot_token}".encode()).hexdigest()[:48]
 
 
+def public_base_url(request: Request) -> str:
+    base = str(request.base_url).rstrip("/")
+    if base.startswith("http://") and not base.startswith("http://localhost"):
+        base = "https://" + base[len("http://"):]  # за прокси Vercel запрос приходит как http
+    return base
+
+
 def _require_bot() -> None:
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=404, detail="Telegram-бот не настроен: задайте TELEGRAM_BOT_TOKEN")
@@ -51,10 +58,7 @@ async def webhook(
 async def setup(request: Request):
     """Подключить вебхук к адресу этого сайта (нажимается из «Настроек»)."""
     _require_bot()
-    base = str(request.base_url).rstrip("/")
-    if base.startswith("http://") and not base.startswith("http://localhost"):
-        base = "https://" + base[len("http://"):]  # за прокси Vercel запрос приходит как http
-    url = f"{base}/api/telegram/webhook"
+    url = f"{public_base_url(request)}/api/telegram/webhook"
     async with httpx.AsyncClient() as http:
         client = TelegramClient(settings.telegram_bot_token, http)
         try:

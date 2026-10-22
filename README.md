@@ -69,17 +69,28 @@ deploy/     установка на свой сервер одной коман�
 1. Зайдите на [vercel.com](https://vercel.com) через GitHub (Sign Up → Continue with GitHub).
 2. **Add New… → Project** → выберите репозиторий `buhgalteria` → **Import**.
    Настройки сборки менять не нужно: всё описано в `vercel.json` и `pyproject.toml`.
-3. В **Environment Variables** добавьте `APP_TOKEN`: придумайте код доступа, его будете вводить
-   на сайте и в приложении. Нажмите **Deploy**.
+3. Нажмите **Deploy**. Если Vercel предложит пресет «Services», выберите **FastAPI**
+   (или «Import single project» у строки `app`).
 4. Подключите бесплатную базу: в проекте **Storage → Create Database → Neon (Postgres)** →
    **Connect**. Затем **Deployments → … → Redeploy**. Без базы данные будут пропадать
    (сайт об этом предупредит).
-5. Откройте адрес вида `https://buhgalteria-xxx.vercel.app`, введите в «Настройках» код доступа.
+5. Включите вход через Telegram (см. ниже) и откройте адрес вида `https://buhgalteria-xxx.vercel.app`.
 
-Telegram-бот на Vercel: добавьте переменные `TELEGRAM_BOT_TOKEN` (от @BotFather) и
-`TELEGRAM_ALLOWED_CHATS`, сделайте Redeploy и нажмите в «Настройках» сайта
-**«Подключить Telegram-бота»**. Текст и PDF бот читает сам; фото на Vercel прочитать нечем,
-поэтому их лучше загружать через приложение (на своём сервере с Docker бот читает и фото).
+## Вход через Telegram
+
+Один аккаунт на телефоне и компьютере, без паролей:
+
+1. В Telegram откройте [@BotFather](https://t.me/BotFather) → `/newbot` → придумайте имя → скопируйте токен.
+2. На Vercel: **Settings → Environment Variables** → `TELEGRAM_BOT_TOKEN` = токен → **Save** → **Redeploy**.
+3. Откройте сайт → **«Войти через Telegram»** → в боте нажмите **Start** — вход завершится сам.
+
+**Первый вошедший становится владельцем** — войдите сразу после настройки. Если войти попробует
+кто-то ещё, владельцу придёт сообщение от бота с кнопкой «Разрешить» (доступом можно управлять и в
+«Настройках»). Этот же бот принимает чеки: пришлите ему фото, PDF или текст. Текст и PDF бот читает
+сам; фото на Vercel прочитать нечем, поэтому их лучше загружать через приложение (на своём сервере с
+Docker бот читает и фото).
+
+Без `TELEGRAM_BOT_TOKEN` и `APP_TOKEN` сайт открыт всем, кто знает адрес.
 
 Ограничения бесплатного тарифа Vercel (Hobby): только некоммерческое использование, файл до 4,5 МБ
 (фото приложение само уменьшает, а большой PDF отправит только текстом).
@@ -127,15 +138,15 @@ cd backend && ../.venv/bin/python -m pytest                   # тесты
 
 ## Android-приложение (APK)
 
-APK собирается в GitHub Actions (workflow **Android APK**):
+APK собирается в GitHub Actions (workflow **Android APK**), когда меняется приложение:
 
-- при каждом пуше APK лежит в артефактах сборки (`buhgalteria-apk`);
-- при пуше тега `v*` (например, `v0.1.0`) APK публикуется в **Releases**.
+- на сайте появляется кнопка **«Скачать APK»** («Настройки», а на Android-телефоне — подсказка на
+  главной): сборка кладёт файл в `frontend/public/download/` и Vercel публикует его;
+- APK также лежит в артефактах сборки (`buhgalteria-apk`), а при пуше тега `v*` — в **Releases**.
 
-При первом запуске откройте в приложении **Настройки**, укажите адрес сервера
-(например, `https://buhgalteria-xxx.vercel.app`) и код доступа. Чтобы адрес сервера был уже
-«зашит» в APK, задайте переменную репозитория `API_URL`
-(Settings → Secrets and variables → Actions → Variables).
+Адрес сервера уже «зашит» в APK (`https://buhgalteria-lime.vercel.app`); другой можно задать
+переменной репозитория `API_URL` (Settings → Secrets and variables → Actions → Variables) или в
+«Настройках» приложения.
 
 Собрать локально (нужны JDK 21 и Android SDK):
 
@@ -153,10 +164,11 @@ cd android && ./gradlew assembleDebug
 
 | Переменная | Назначение |
 |---|---|
-| `APP_TOKEN` | Код доступа к сайту и API. Пусто — вход без кода (только для локальной разработки!) |
+| `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather: вход через Telegram и приём чеков ботом |
+| `APP_TOKEN` | Необязательно: общий код доступа вместо (или вместе с) входом через Telegram |
+| `SESSION_SECRET` | Необязательно: секрет подписи сессий (по умолчанию выводится из токена бота) |
 | `DATABASE_URL` | База данных (Postgres). На Vercel подставляется сама при подключении Neon. По умолчанию — SQLite в `DATA_DIR` |
-| `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота (необязательно) |
-| `TELEGRAM_ALLOWED_CHATS` | ID чатов, которым разрешено присылать чеки боту (бот подскажет ID по `/start`) |
+| `TELEGRAM_ALLOWED_CHATS` | Необязательно: ID чатов (например, группы), которым можно присылать чеки боту без входа |
 | `TELEGRAM_MODE` | `polling` (свой сервер, по умолчанию) или `webhook` (по умолчанию на Vercel) |
 | `AUTO_CONFIRM_SCORE` | Порог автоматической фиксации, по умолчанию `0.85` |
 | `MAX_UPLOAD_MB` | Максимальный размер файла чека (на Vercel — 4) |
